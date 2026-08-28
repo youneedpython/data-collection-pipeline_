@@ -13,7 +13,6 @@ CSV 내부 source_page와 parsed_at이 같은 배치를 가리키는지 검증�
     MySQL books
 """
 
-import os
 import re
 from datetime import datetime
 from decimal import Decimal
@@ -21,15 +20,16 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from dotenv import load_dotenv
-from sqlalchemy import URL, create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
-
-PROJECT_DIR = Path(__file__).resolve().parents[2]
-PROCESSED_DIR = PROJECT_DIR / 'data' / 'processed'
-ENV_FILE = PROJECT_DIR / '.env'
+from .config import PROCESSED_DIR
+from .database import (
+    create_mysql_engine,
+    load_database_config,
+    test_mysql_connection,
+)
 
 PROCESSED_CSV_PATTERN = 'books_pages_*_processed_*.csv'
 PROCESSED_FILE_PATTERN_RE = re.compile(
@@ -70,13 +70,6 @@ STRING_COLUMNS = [
 
 NOT_NULL_COLUMNS = DB_COLUMNS
 
-REQUIRED_ENV_NAMES = {
-    'DB_HOST',
-    'DB_PORT',
-    'DB_NAME',
-    'DB_USER',
-    'DB_PASSWORD',
-}
 
 
 CREATE_BOOKS_TABLE_SQL = text(
@@ -491,111 +484,6 @@ def dataframe_to_database_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     return records
 
 
-def load_database_config(env_file: Path = ENV_FILE) -> dict[str, str | int]:
-    """
-    .env 파일에서 MySQL 연결 정보를 읽고 검증한다.
-
-    Args:
-        env_file:
-            MySQL 연결 정보가 저장된 .env 파일 경로
-
-    Returns:
-        host, port, database, username, password를 담은 연결 설정
-
-    Raises:
-        FileNotFoundError:
-            .env 파일이 존재하지 않는 경우
-
-        ValueError:
-            필수 환경 변수가 없거나 DB_PORT가 정수가 아닌 경우
-    """
-
-    if not env_file.is_file():
-        raise FileNotFoundError(f'.env 파일이 없습니다. {env_file}')
-
-    load_dotenv(dotenv_path=env_file)
-
-    missing_names = [
-        name
-        for name in REQUIRED_ENV_NAMES
-        if not os.environ.get(name)
-    ]
-
-    if missing_names:
-        raise ValueError(f'필수 환경 변수가 없습니다. {sorted(missing_names)}')
-
-    try:
-        port = int(os.environ['DB_PORT'])
-    except ValueError as error:
-        raise ValueError('DB_PORT는 정수여야 합니다.') from error
-
-    return {
-        'host': os.environ['DB_HOST'],
-        'port': port,
-        'database': os.environ['DB_NAME'],
-        'username': os.environ['DB_USER'],
-        'password': os.environ['DB_PASSWORD'],
-    }
-
-
-def create_mysql_engine(config: dict[str, str | int]) -> Engine:
-    """
-    MySQL 연결 설정으로 SQLAlchemy Engine을 생성한다.
-
-    Args:
-        config:
-            load_database_config()가 반환한 연결 설정
-
-    Returns:
-        PyMySQL 드라이버를 사용하는 SQLAlchemy Engine
-    """
-
-    db_url = URL.create(
-        drivername='mysql+pymysql',
-        username=str(config['username']),
-        password=str(config['password']),
-        host=str(config['host']),
-        port=int(config['port']),
-        database=str(config['database']),
-        query={'charset': 'utf8mb4'},
-    )
-
-    return create_engine(
-        db_url,
-        pool_pre_ping=True,
-        pool_recycle=1800,
-    )
-
-
-def test_mysql_connection(engine: Engine) -> dict[str, str]:
-    """
-    MySQL 연결 상태와 서버 정보를 확인한다.
-
-    Args:
-        engine:
-            연결을 확인할 SQLAlchemy Engine
-
-    Returns:
-        MySQL 버전, 데이터베이스명, 현재 사용자 정보
-    """
-
-    query = text(
-        '''
-        SELECT
-            VERSION() AS ver,
-            DATABASE() AS db,
-            CURRENT_USER() AS user
-        '''
-    )
-
-    with engine.connect() as connection:
-        connection_info = connection.execute(query).mappings().one()
-
-    return {
-        'mysql_version': str(connection_info['ver']),
-        'database_name': str(connection_info['db']),
-        'current_user': str(connection_info['user']),
-    }
 
 
 def create_books_table(engine: Engine) -> None:

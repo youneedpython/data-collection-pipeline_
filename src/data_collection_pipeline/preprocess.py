@@ -22,13 +22,7 @@ import re
 
 import pandas as pd
 
-
-CATALOGUE_URL = 'https://books.toscrape.com/catalogue/'
-SOURCE_SITE = 'Books to Scrape'
-
-PROJECT_DIR = Path(__file__).resolve().parents[2]
-INTERIM_DIR = PROJECT_DIR / 'data' / 'interim'
-PROCESSED_DIR = PROJECT_DIR / 'data' / 'processed'
+from .config import BASE_URL, INTERIM_DIR, PROCESSED_DIR, SOURCE_SITE
 
 BATCH_DIR_PATTERN_RE = re.compile(r'^\d{8}_\d{6}$')
 PARSED_CSV_PATTERN = 'books_page_*_parsed.csv'
@@ -484,7 +478,7 @@ def validate_processed_books(df: pd.DataFrame) -> dict[str, int]:
     invalid_rating_count = int((~df['rating'].between(1, 5)).sum())
     invalid_page_count = int((df['source_page'] <= 0).sum())
     invalid_url_count = int(
-        (~df['detail_url'].str.startswith(CATALOGUE_URL, na=False)).sum()
+        (~df['detail_url'].str.startswith(BASE_URL, na=False)).sum()
     )
     duplicate_url_count = int(df['detail_url'].duplicated(keep=False).sum())
     duplicate_book_id_count = int(df['book_id'].duplicated(keep=False).sum())

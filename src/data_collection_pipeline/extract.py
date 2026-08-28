@@ -27,16 +27,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
-
-BASE_URL = 'https://books.toscrape.com/catalogue/'
-
-PROJECT_DIR = Path(__file__).resolve().parents[2]
-
-## 원본 HTML 배치 폴더의 기본 경로
-RAW_HTML_DIR = PROJECT_DIR / 'data' / 'raw' / 'html'
-
-## 파싱 CSV 배치 폴더의 기본 경로
-INTERIM_DIR = PROJECT_DIR / 'data' / 'interim'
+from .config import BASE_URL, INTERIM_DIR, RAW_HTML_DIR
 
 BATCH_DIR_PATTERN_RE = re.compile(r'^\d{8}_\d{6}$')
 RAW_HTML_PATTERN = 'books_page_*.html'
