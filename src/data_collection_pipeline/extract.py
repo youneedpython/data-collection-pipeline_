@@ -18,16 +18,16 @@ raw와 interim이 같은 배치 이름을 사용하도록 변경합니다.
         ...
 """
 
+import re
 from datetime import datetime
 from pathlib import Path
-import re
 from urllib.parse import urljoin
 
 import pandas as pd
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
-from .config import BASE_URL, INTERIM_DIR, RAW_HTML_DIR
+from .config import APP_TIMEZONE, BASE_URL, INTERIM_DIR, RAW_HTML_DIR
 
 BATCH_DIR_PATTERN_RE = re.compile(r'^\d{8}_\d{6}$')
 RAW_HTML_PATTERN = 'books_page_*.html'
@@ -77,7 +77,7 @@ def parse_batch_directory_name(batch_dir: Path) -> datetime:
     if BATCH_DIR_PATTERN_RE.fullmatch(batch_dir.name) is None:
         raise ValueError(f'수집 배치 폴더명 형식이 올바르지 않습니다. {batch_dir.name}')
 
-    return datetime.strptime(batch_dir.name, '%Y%m%d_%H%M%S')
+    return datetime.strptime(batch_dir.name, '%Y%m%d_%H%M%S').replace(tzinfo=APP_TIMEZONE)
 
 
 def find_latest_batch_directory(directory: Path = RAW_HTML_DIR) -> Path:

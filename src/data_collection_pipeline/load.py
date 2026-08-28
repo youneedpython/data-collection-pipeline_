@@ -24,7 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
-from .config import PROCESSED_DIR
+from .config import APP_TIMEZONE, PROCESSED_DIR
 from .database import (
     create_mysql_engine,
     load_database_config,
@@ -197,7 +197,7 @@ def parse_processed_file_name(file_path: Path) -> tuple[int, int, datetime]:
 
     start_page = int(matched.group(1))
     end_page = int(matched.group(2))
-    batch_at = datetime.strptime(matched.group(3), '%Y%m%d_%H%M%S')
+    batch_at = datetime.strptime(matched.group(3), '%Y%m%d_%H%M%S').replace(tzinfo=APP_TIMEZONE)
 
     if start_page > end_page:
         raise ValueError(

@@ -6,7 +6,7 @@
 """
 
 from pathlib import Path
-
+from zoneinfo import ZoneInfo
 
 ## ===========================================================
 ## 1. 프로젝트 경로
@@ -40,3 +40,9 @@ REQUEST_INTERVAL = 0.5
 HEADERS = {
     'User-Agent': 'EducationalDataCollector/1.0',
 }
+
+## ===========================================================
+## 3. 시간대 설정
+## ===========================================================
+
+APP_TIMEZONE = ZoneInfo('Asia/Seoul')

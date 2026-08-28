@@ -50,11 +50,11 @@ import requests
 from sqlalchemy.exc import SQLAlchemyError
 
 from src.data_collection_pipeline import (
-        run_crawling, 
-        run_extract, 
-        run_preprocess,
-        run_load
-)     
+    run_crawling,
+    run_extract,
+    run_load,
+    run_preprocess,
+)
 
 ## --------------------------------------
 ## 프로젝트 경로 설정
