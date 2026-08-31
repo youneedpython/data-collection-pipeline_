@@ -5,6 +5,7 @@
 각 단계 모듈은 필요한 설정값만 import하여 사용합니다.
 """
 
+import os
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -14,7 +15,8 @@ from zoneinfo import ZoneInfo
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 
-DATA_DIR = PROJECT_DIR / 'data'
+DEFAULT_DATA_DIR = PROJECT_DIR / 'data'
+DATA_DIR = Path(os.getenv('DATA_DIR', str(DEFAULT_DATA_DIR)))
 RAW_HTML_DIR = DATA_DIR / 'raw' / 'html'
 INTERIM_DIR = DATA_DIR / 'interim'
 PROCESSED_DIR = DATA_DIR / 'processed'

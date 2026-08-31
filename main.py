@@ -49,12 +49,10 @@ from pathlib import Path
 import requests
 from sqlalchemy.exc import SQLAlchemyError
 
-from src.data_collection_pipeline import (
-    run_crawling,
-    run_extract,
-    run_load,
-    run_preprocess,
-)
+from src.data_collection_pipeline.crawling import run_crawling
+from src.data_collection_pipeline.extract import run_extract
+from src.data_collection_pipeline.load import run_load
+from src.data_collection_pipeline.preprocess import run_preprocess
 
 ## --------------------------------------
 ## 프로젝트 경로 설정

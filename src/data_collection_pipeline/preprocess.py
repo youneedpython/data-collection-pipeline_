@@ -397,7 +397,7 @@ def preprocess_books(
 
     validate_input_books(books_df)
 
-    processed_at = pd.Timestamp.now().floor('s')
+    processed_at = pd.Timestamp.now(tz=APP_TIMEZONE).floor('s')
     processed_df = clean_string_columns(books_df)
 
     ## 가격 문자열에서 숫자를 추출하여 price 컬럼 생성
@@ -547,7 +547,7 @@ def save_csv_atomically(df: pd.DataFrame, file_path: Path) -> Path:
             temp_path,
             index=False,
             encoding='utf-8-sig',
-            date_format='%Y-%m-%d %H:%M:%S',
+            date_format='%Y-%m-%dT%H:%M:%S%z',
         )
         temp_path.replace(file_path)
 

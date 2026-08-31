@@ -1,0 +1,60 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  Books to Scrape 데이터 수집 파이프라인의
+  Crawling Lambda 배포를 위한 AWS SAM 템플릿
+
+
+## ===========================================================
+## 공통 설정
+## ===========================================================
+
+Globals:
+
+  Function:
+    Runtime: python3.13
+    Architectures:
+      - x86_64
+    MemorySize: 512
+    Timeout: 60
+
+
+## ===========================================================
+## AWS Resources
+## ===========================================================
+
+Resources:
+
+  CrawlingFunction:
+    Type: AWS::Serverless::Function
+
+    Properties:
+
+      FunctionName: books-pipeline-crawling
+
+      CodeUri: .
+
+      Handler: handlers.crawling_handler.lambda_handler
+
+      Description: >
+        Books to Scrape 페이지를 수집하는 Crawling Lambda
+
+      Environment:
+        Variables:
+          DATA_DIR: /tmp/data
+
+
+## ===========================================================
+## Outputs
+## ===========================================================
+
+Outputs:
+
+  CrawlingFunctionName:
+    Description: Crawling Lambda Function Name
+    Value: !Ref CrawlingFunction
+
+  CrawlingFunctionArn:
+    Description: Crawling Lambda Function ARN
+    Value: !GetAtt CrawlingFunction.Arn

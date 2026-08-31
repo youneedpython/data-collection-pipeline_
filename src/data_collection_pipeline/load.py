@@ -351,8 +351,8 @@ def validate_processed_batch(
     if parsed_at != batch_at:
         raise ValueError(
             f'processed 파일명과 parsed_at 배치 시각이 다릅니다. '
-            f'파일명 : {batch_at:%Y-%m-%d %H:%M:%S}, '
-            f'데이터 : {parsed_at:%Y-%m-%d %H:%M:%S}'
+            f'파일명 : {batch_at.isoformat()}, '
+            f'데이터 : {parsed_at.isoformat()}'
         )
 
 
