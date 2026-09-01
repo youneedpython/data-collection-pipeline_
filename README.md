@@ -1,12 +1,13 @@
 # Data Collection Pipeline
 
-정적 웹페이지에서 데이터를 수집하고  
-**수집(Crawling) → 파싱(Extract) → 전처리(Preprocess) → MySQL 저장(Load)** 까지 수행하는 데이터 수집 파이프라인 프로젝트입니다.
+정적 웹페이지에서 도서 데이터를 수집하고, 로컬 환경과 AWS Lambda 환경에서 단계별로 처리하는 데이터 수집 파이프라인 프로젝트입니다.
 
-현재 프로젝트는 [Books to Scrape](https://books.toscrape.com/) 사이트를 대상으로  
-페이지네이션 기반 정적 웹 크롤링, 배치 단위 데이터 관리, 데이터 검증, MySQL UPSERT를 구현하고 있습니다.
+현재 프로젝트는 [Books to Scrape](https://books.toscrape.com/)를 대상으로 다음 두 실행 구조를 함께 제공합니다.
 
-또한 `pytest`, `Ruff`, GitHub Actions를 이용하여 코드 품질과 테스트를 자동으로 검증하는 CI 환경을 구성합니다.
+- **로컬 파이프라인**: Crawling → Extract → Preprocess → Load → MySQL
+- **AWS 파이프라인(현재 구현 범위)**: Crawling Lambda → S3 Raw → Extract Lambda → S3 Interim
+
+또한 `pytest`, `Ruff`, GitHub Actions를 이용하여 코드 품질과 테스트를 자동으로 검증하고, AWS SAM과 CloudFormation을 이용하여 Lambda와 S3 리소스를 배포합니다.
 
 ---
 
@@ -15,20 +16,23 @@
 이 프로젝트의 주요 목표는 다음과 같습니다.
 
 - 정적 웹페이지의 페이지네이션 데이터를 수집합니다.
-- 한 번의 수집 실행을 하나의 배치로 관리합니다.
-- 원본 HTML, 파싱 CSV, 전처리 CSV를 단계별로 분리하여 저장합니다.
-- 각 단계의 반환값을 다음 단계의 입력값으로 전달합니다.
+- 한 번의 수집 실행을 `batch_id` 기준으로 관리합니다.
+- 원본 HTML, 파싱 CSV, 전처리 CSV를 단계별로 분리합니다.
+- 로컬 환경에서는 전체 파이프라인을 순차 실행하여 MySQL까지 적재합니다.
+- AWS 환경에서는 Lambda별 책임을 분리하고 S3를 단계 간 데이터 저장소로 사용합니다.
+- Lambda 간에 대용량 데이터 자체를 전달하지 않고 `bucket`, `prefix`, `batch_id` 같은 메타데이터를 전달합니다.
 - 데이터 저장 전 필수 컬럼, 결측값, 중복값, 자료형을 검증합니다.
-- 전처리 완료 데이터를 MySQL `books` 테이블에 UPSERT합니다.
-- 공통 설정과 데이터베이스 연결 책임을 별도 모듈로 분리합니다.
 - `pytest`와 `Ruff`를 이용해 로컬에서 코드와 테스트를 검증합니다.
 - GitHub Actions를 이용해 `push`, `pull_request` 시 CI를 자동 실행합니다.
+- AWS SAM을 이용해 Lambda, IAM Role, S3 Bucket을 코드로 정의하고 배포합니다.
 
 ---
 
-## 2. 전체 파이프라인
+## 2. 전체 구성
 
-현재 로컬 데이터 파이프라인은 다음 순서로 실행됩니다.
+### 2.1 로컬 파이프라인
+
+로컬에서는 `main.py`가 전체 파이프라인의 진입점입니다.
 
 ```text
 Books to Scrape
@@ -50,7 +54,7 @@ Load
 MySQL
 ```
 
-실행 함수 기준으로 보면 다음과 같습니다.
+실행 함수 기준:
 
 ```text
 run_crawling()
@@ -62,13 +66,58 @@ run_preprocess()
 run_load()
 ```
 
-`main.py`가 각 실행 함수를 순서대로 연결하는 프로젝트 진입점 역할을 합니다.
+### 2.2 AWS 파이프라인 - 현재 구현 상태
+
+현재 AWS 환경에서는 Crawling과 Extract 단계를 Lambda로 분리했습니다.
+
+```text
+Books to Scrape
+       ↓
+Crawling Lambda
+       ↓
+/tmp/data/raw/html/{batch_id}/
+       ↓
+Amazon S3
+raw/{batch_id}/
+       ↓
+Extract Lambda
+       ↓
+/tmp/data/raw/html/{batch_id}/
+       ↓
+HTML Parsing
+       ↓
+/tmp/data/interim/{batch_id}/
+       ↓
+Amazon S3
+interim/{batch_id}/
+```
+
+현재 구현 완료 범위:
+
+```text
+Crawling Lambda
+      ↓
+S3 Raw
+      ↓
+Extract Lambda
+      ↓
+S3 Interim
+      ✅ 완료
+
+다음 단계
+      ↓
+Preprocess Lambda
+      ↓
+S3 Processed
+      ↓
+Load Lambda
+      ↓
+RDS MySQL
+```
 
 ---
 
 ## 3. 프로젝트 구조
-
-현재 프로젝트의 주요 구조는 다음과 같습니다.
 
 ```text
 data-collection-pipeline/
@@ -77,97 +126,58 @@ data-collection-pipeline/
 │  └─ workflows/
 │     └─ ci.yml
 │
-├─ data/
-│  ├─ raw/
-│  │  └─ html/
-│  │     └─ YYYYMMDD_HHMMSS/
-│  │        ├─ books_page_001.html
-│  │        ├─ books_page_002.html
-│  │        └─ ...
-│  │
-│  ├─ interim/
-│  │  └─ YYYYMMDD_HHMMSS/
-│  │     ├─ books_page_001_parsed.csv
-│  │     ├─ books_page_002_parsed.csv
-│  │     └─ ...
-│  │
-│  └─ processed/
-│     └─ books_pages_001_003_processed_YYYYMMDD_HHMMSS.csv
+├─ events/
+│  ├─ crawling-event.json
+│  └─ extract-event.json
 │
-├─ docs/
-│  ├─ 00_static_pipeline_docs/
-│  ├─ 01_requirements/
-│  │  ├─ 데이터_수집_파이프라인_요구사항_정의서_v1.0.docx
-│  │  ├─ 데이터_수집_파이프라인_요구사항_정의서_v1_1.docx
-│  │  └─ 데이터_수집_파이프라인_요구사항_정의서_v2.0.docx
-│  │
-│  └─ 02_architecture/
-│     ├─ 빅데이터_플랫폼_아키텍처_설계서_v1.0.docx
-│     └─ 빅데이터_플랫폼_아키텍처_설계서_v2.0.docx
-│
-├─ notebooks/
+├─ handlers/
+│  ├─ __init__.py
+│  ├─ crawling_handler.py
+│  └─ extract_handler.py
 │
 ├─ src/
 │  └─ data_collection_pipeline/
 │     ├─ __init__.py
 │     ├─ config.py
-│     ├─ database.py
 │     ├─ crawling.py
+│     ├─ database.py
 │     ├─ extract.py
+│     ├─ load.py
 │     ├─ preprocess.py
-│     └─ load.py
+│     └─ s3_storage.py
 │
 ├─ tests/
+│  ├─ test_crawling_handler.py
 │  ├─ test_extract.py
-│  └─ test_preprocess.py
+│  ├─ test_extract_handler.py
+│  ├─ test_preprocess.py
+│  └─ test_s3_storage.py
 │
-├─ .env
+├─ data/                  # 로컬 실행 데이터, Git 제외
+├─ docs/                  # 로컬 문서, 현재 Git 제외
+├─ notebooks/             # 학습용 Notebook, Git 제외
+│
+├─ .env                   # 로컬 비밀정보, Git 제외
 ├─ .env.example
 ├─ .gitignore
 ├─ main.py
 ├─ pyproject.toml
 ├─ README.md
 ├─ requirements.txt
-└─ requirements-dev.txt
+├─ requirements-dev.txt
+├─ samconfig.toml         # 현재 Git 제외
+└─ template.yaml
 ```
 
-`data/`, `.env`, `notebooks/` 등은 로컬 실행 또는 학습 과정에서 사용하는 파일입니다.  
-Git 추적 여부는 `.gitignore` 설정을 기준으로 관리합니다.
+`.aws-sam/`, `.venv/`, `data/`, `.env` 등은 실행 환경 또는 빌드 산출물이므로 Git에서 제외합니다.
 
 ---
 
-## 4. 주요 모듈
+## 4. 주요 Python 모듈
 
-### 4.1 `main.py`
+### 4.1 `config.py`
 
-전체 데이터 수집 파이프라인을 실행하는 진입점입니다.
-
-```python
-raw_batch_dir = run_crawling()
-
-parsed_csv_files = run_extract(raw_batch_dir)
-
-interim_batch_dir = parsed_csv_files[0].parent
-
-processed_csv_file = run_preprocess(interim_batch_dir)
-
-load_summary = run_load(processed_csv_file)
-```
-
-각 단계에서 생성된 결과를 다음 단계의 입력값으로 전달합니다.
-
-| 함수 | 입력 | 반환값 |
-|---|---|---|
-| `run_crawling()` | 기본 수집 설정 | raw HTML 배치 폴더 `Path` |
-| `run_extract()` | raw HTML 배치 폴더 `Path` | parsed CSV 경로 `list[Path]` |
-| `run_preprocess()` | interim 배치 폴더 `Path` | processed CSV `Path` |
-| `run_load()` | processed CSV `Path` | MySQL 저장 결과 `dict` |
-
----
-
-### 4.2 `config.py`
-
-프로젝트에서 공통으로 사용하는 설정을 관리합니다.
+프로젝트에서 공통으로 사용하는 경로, 웹 수집 설정, 시간대를 관리합니다.
 
 주요 설정:
 
@@ -178,32 +188,113 @@ RAW_HTML_DIR
 INTERIM_DIR
 PROCESSED_DIR
 ENV_FILE
-
 BASE_URL
 SOURCE_SITE
-
 START_PAGE
 END_PAGE
-
 CONNECT_TIMEOUT
 READ_TIMEOUT
 REQUEST_INTERVAL
 HEADERS
-
 APP_TIMEZONE
 ```
 
-현재 `APP_TIMEZONE`은 다음과 같이 정의되어 있습니다.
+로컬 환경에서는 기본적으로 프로젝트의 `data/`를 사용합니다.
+
+AWS Lambda에서는 `template.yaml`의 환경변수로 다음 값을 전달합니다.
+
+```text
+DATA_DIR=/tmp/data
+```
+
+따라서 같은 Python 모듈을 로컬과 Lambda에서 재사용할 수 있습니다.
+
+시간대는 다음 기준을 사용합니다.
 
 ```text
 Asia/Seoul
 ```
 
-각 단계 모듈은 필요한 설정만 `config.py`에서 import하여 사용합니다.
+---
+
+### 4.2 `crawling.py`
+
+Books to Scrape 페이지를 순회하면서 HTTP 요청을 보내고 원본 HTML을 배치 단위로 저장합니다.
+
+주요 역할:
+
+```text
+페이지 요청
+→ HTTP 응답 검증
+→ 배치 디렉터리 생성
+→ 페이지별 Raw HTML 저장
+```
+
+로컬 출력 예:
+
+```text
+data/raw/html/20260830_163041/
+├─ books_page_001.html
+├─ books_page_002.html
+└─ books_page_003.html
+```
+
+Lambda에서는 동일한 로직이 `/tmp/data/raw/html/{batch_id}/`에 임시 파일을 생성합니다.
 
 ---
 
-### 4.3 `database.py`
+### 4.3 `extract.py`
+
+Raw HTML을 읽고 BeautifulSoup으로 필요한 도서 정보를 파싱하여 페이지별 CSV를 생성합니다.
+
+주요 처리:
+
+```text
+Raw HTML 탐색
+→ HTML 읽기
+→ 도서 정보 파싱
+→ DataFrame 생성
+→ 데이터 검증
+→ 페이지별 Parsed CSV 저장
+```
+
+로컬 출력 예:
+
+```text
+data/interim/20260830_163041/
+├─ books_page_001_parsed.csv
+├─ books_page_002_parsed.csv
+└─ books_page_003_parsed.csv
+```
+
+---
+
+### 4.4 `preprocess.py`
+
+페이지별 Parsed CSV를 통합하고 문자열, 가격, 재고 상태, 자료형, 중복 등을 정리합니다.
+
+주요 처리:
+
+```text
+페이지별 CSV 탐색
+→ 페이지 순서 검증
+→ CSV 통합
+→ 문자열 정리
+→ 가격 변환
+→ 재고 상태 변환
+→ 자료형 변환
+→ book_id 생성
+→ 메타데이터 추가
+→ 중복 제거
+→ 데이터 검증
+→ Processed CSV 저장
+```
+
+현재 AWS Lambda 버전은 아직 구현하지 않았으며 로컬 파이프라인에서 사용합니다.
+
+---
+
+### 4.5 `database.py`
 
 MySQL 연결 설정과 SQLAlchemy Engine 생성을 담당합니다.
 
@@ -225,179 +316,198 @@ DB_USER
 DB_PASSWORD
 ```
 
-데이터 적재 로직과 데이터베이스 연결 책임을 분리하여 관리합니다.
-
 ---
 
-### 4.4 `crawling.py`
+### 4.6 `load.py`
 
-Books to Scrape 페이지를 순회하면서 HTTP 요청을 보내고  
-응답받은 원본 HTML을 배치 단위로 저장합니다.
-
-주요 함수:
-
-```text
-fetch_html()
-ensure_directory()
-create_batch_directory()
-save_raw_html()
-run_crawling()
-```
-
-출력 예:
-
-```text
-data/raw/html/20260826_172800/
-├─ books_page_001.html
-├─ books_page_002.html
-└─ books_page_003.html
-```
-
----
-
-### 4.5 `extract.py`
-
-raw 배치 폴더의 HTML 파일을 읽고 필요한 도서 데이터를 파싱하여  
-페이지별 interim CSV를 생성합니다.
-
-주요 함수:
-
-```text
-parse_batch_directory_name()
-find_latest_batch_directory()
-parse_raw_file_name()
-find_raw_html_files()
-load_raw_html()
-get_required_tag()
-parse_rating()
-parse_book_item()
-parse_books()
-validate_books_dataframe()
-create_interim_batch_directory()
-save_parsed_csv()
-verify_saved_csv()
-run_extract()
-```
-
-출력 예:
-
-```text
-data/interim/20260826_172800/
-├─ books_page_001_parsed.csv
-├─ books_page_002_parsed.csv
-└─ books_page_003_parsed.csv
-```
-
----
-
-### 4.6 `preprocess.py`
-
-페이지별 parsed CSV를 하나의 DataFrame으로 통합하고  
-전처리와 데이터 검증을 수행합니다.
+Processed CSV를 읽고 검증한 뒤 MySQL `books` 테이블에 UPSERT 방식으로 저장합니다.
 
 주요 처리:
 
 ```text
-페이지별 CSV 탐색
-→ 페이지 순서 검증
-→ CSV 통합
-→ 문자열 정리
-→ 가격 변환
-→ 재고 상태 변환
-→ 자료형 변환
-→ book_id 생성
-→ 메타데이터 추가
-→ 중복 제거
-→ 데이터 검증
-→ processed CSV 저장
-```
-
-주요 함수:
-
-```text
-parse_batch_directory_name()
-find_latest_interim_batch_directory()
-parse_parsed_file_name()
-find_parsed_csv_files()
-load_parsed_csv()
-validate_input_books()
-load_parsed_csv_files()
-clean_string_columns()
-parse_price()
-parse_availability()
-preprocess_books()
-validate_processed_books()
-ensure_directory()
-save_csv_atomically()
-build_processed_file_path()
-save_processed_csv()
-verify_saved_csv()
-run_preprocess()
-```
-
-출력 예:
-
-```text
-data/processed/
-└─ books_pages_001_003_processed_20260826_172800.csv
-```
-
----
-
-### 4.7 `load.py`
-
-processed CSV를 읽고 배치 정보와 데이터 상태를 검증한 뒤  
-MySQL `books` 테이블에 저장합니다.
-
-주요 처리:
-
-```text
-processed CSV 입력
-→ 파일명 및 배치 정보 검증
+Processed CSV 입력
+→ 파일명 및 배치 검증
 → DB 저장용 자료형 변환
-→ database.py를 통한 MySQL Engine 생성
+→ MySQL 연결
 → books 테이블 생성
 → UPSERT
 ```
 
-주요 함수:
+현재 AWS Lambda 버전은 아직 구현하지 않았으며 로컬 파이프라인에서 사용합니다.
+
+---
+
+### 4.7 `s3_storage.py`
+
+AWS Lambda 단계에서 사용하는 Amazon S3 입출력 기능을 담당합니다.
+
+현재 구현 함수:
 
 ```text
-parse_processed_file_name()
-find_latest_processed_csv()
-load_processed_csv()
-validate_processed_batch()
-prepare_and_validate_dataframe()
-dataframe_to_database_records()
-create_books_table()
-upsert_books()
-run_load()
+upload_raw_html_batch()
+    Crawling 결과 HTML → S3 raw 영역 업로드
+
+download_raw_html_batch()
+    S3 raw HTML → Extract Lambda /tmp 다운로드
+
+upload_interim_files()
+    Extract 결과 CSV → S3 interim 영역 업로드
 ```
 
-동일한 데이터가 다시 수집된 경우 INSERT 또는 UPDATE가 수행되도록 UPSERT 방식으로 저장합니다.
+S3 Object Key 예:
+
+```text
+raw/20260830_163041/books_page_001.html
+raw/20260830_163041/books_page_002.html
+raw/20260830_163041/books_page_003.html
+
+interim/20260830_163041/books_page_001_parsed.csv
+interim/20260830_163041/books_page_002_parsed.csv
+interim/20260830_163041/books_page_003_parsed.csv
+```
 
 ---
 
-### 4.8 `__init__.py`
+## 5. Lambda Handler
 
-파이프라인의 주요 실행 함수를 패키지 외부에 제공합니다.
+### 5.1 `crawling_handler.py`
 
-```python
-from .crawling import run_crawling
-from .extract import run_extract
-from .load import run_load
-from .preprocess import run_preprocess
+Crawling Lambda의 실행 진입점입니다.
+
+입력 Event 예:
+
+```json
+{
+  "start_page": 1,
+  "end_page": 3
+}
 ```
 
-`main.py`는 각 모듈의 세부 구현보다 주요 실행 함수만 import하여 사용합니다.
+처리 흐름:
+
+```text
+Lambda Event
+      ↓
+start_page / end_page 확인
+      ↓
+run_crawling()
+      ↓
+/tmp에 Raw HTML 생성
+      ↓
+upload_raw_html_batch()
+      ↓
+S3 raw/{batch_id}/ 저장
+```
+
+반환 예:
+
+```json
+{
+  "stage": "crawling",
+  "status": "SUCCEEDED",
+  "batch_id": "20260830_163041",
+  "start_page": 1,
+  "end_page": 3,
+  "bucket": "<data-bucket-name>",
+  "raw_prefix": "raw/20260830_163041/",
+  "object_count": 3,
+  "request_id": "..."
+}
+```
+
+`bucket`, `raw_prefix`, `batch_id`는 다음 Extract 단계가 S3 데이터를 찾기 위한 메타데이터입니다.
 
 ---
 
-## 5. 배치 관리
+### 5.2 `extract_handler.py`
 
-한 번의 수집 실행은 하나의 배치로 관리합니다.
+Extract Lambda의 실행 진입점입니다.
 
-배치 이름 형식:
+입력 Event 예:
+
+```json
+{
+  "batch_id": "20260830_163041",
+  "bucket": "<data-bucket-name>",
+  "raw_prefix": "raw/20260830_163041/"
+}
+```
+
+처리 흐름:
+
+```text
+Lambda Event
+      ↓
+batch_id / bucket / raw_prefix 검증
+      ↓
+S3 Raw HTML 다운로드
+      ↓
+/tmp/data/raw/html/{batch_id}/
+      ↓
+run_extract()
+      ↓
+Parsed CSV 생성
+      ↓
+S3 interim/{batch_id}/ 업로드
+```
+
+반환 예:
+
+```json
+{
+  "stage": "extract",
+  "status": "SUCCEEDED",
+  "batch_id": "20260830_163041",
+  "bucket": "<data-bucket-name>",
+  "raw_prefix": "raw/20260830_163041/",
+  "interim_prefix": "interim/20260830_163041/",
+  "object_count": 3,
+  "request_id": "..."
+}
+```
+
+향후 Step Functions에서는 이 반환값의 메타데이터를 다음 단계로 전달할 예정입니다.
+
+---
+
+## 6. S3 데이터 구조
+
+AWS 파이프라인의 데이터 Bucket은 현재 다음 구조를 사용합니다.
+
+```text
+DataBucket
+│
+├─ raw/
+│  └─ {batch_id}/
+│     ├─ books_page_001.html
+│     ├─ books_page_002.html
+│     └─ books_page_003.html
+│
+└─ interim/
+   └─ {batch_id}/
+      ├─ books_page_001_parsed.csv
+      ├─ books_page_002_parsed.csv
+      └─ books_page_003_parsed.csv
+```
+
+S3 콘솔에서 보이는 `raw/`, `interim/`은 일반 파일시스템의 실제 디렉터리가 아니라 Object Key의 Prefix입니다.
+
+향후 구조:
+
+```text
+DataBucket
+├─ raw/
+├─ interim/
+└─ processed/
+```
+
+---
+
+## 7. 배치 관리
+
+한 번의 수집 실행은 하나의 `batch_id`로 관리합니다.
+
+형식:
 
 ```text
 YYYYMMDD_HHMMSS
@@ -406,46 +516,131 @@ YYYYMMDD_HHMMSS
 예:
 
 ```text
-20260826_172800
+20260830_163041
 ```
 
-raw와 interim은 동일한 배치 이름을 사용합니다.
+동일한 `batch_id`를 단계별 S3 Prefix에 사용합니다.
 
 ```text
-data/raw/html/20260826_172800/
-data/interim/20260826_172800/
+raw/20260830_163041/
+interim/20260830_163041/
 ```
 
-processed 데이터는 파일명에 페이지 범위와 배치 시각을 포함합니다.
-
-```text
-books_pages_001_003_processed_20260826_172800.csv
-            ───────             ───────────────
-           페이지 범위              배치 시각
-```
-
-이를 통해 한 번의 수집 작업이 raw → interim → processed → MySQL로 처리되는 과정을 추적할 수 있습니다.
+이를 통해 한 번의 데이터 수집 작업이 다음 단계로 어떻게 처리되었는지 추적할 수 있습니다.
 
 ---
 
-## 6. 단계별 데이터 상태
+## 8. AWS SAM 구성
 
-| 단계 | 저장 위치 | 데이터 상태 |
-|---|---|---|
-| Crawling | `data/raw/html/<batch>/` | 서버 응답 원본 HTML |
-| Extract | `data/interim/<batch>/` | 페이지별 파싱 CSV |
-| Preprocess | `data/processed/` | 통합·전처리·검증 완료 CSV |
-| Load | MySQL `books` | DB 저장 완료 데이터 |
+AWS 리소스는 프로젝트 루트의 `template.yaml`에서 정의합니다.
+
+현재 주요 리소스:
+
+```text
+Resources
+├─ DataBucket
+├─ CrawlingFunction
+└─ ExtractFunction
+```
+
+### `DataBucket`
+
+파이프라인의 Raw HTML과 Interim CSV를 저장하는 S3 Bucket입니다.
+
+CloudFormation이 Bucket 이름을 자동 생성하므로 특정 Bucket 이름을 코드에 고정하지 않습니다.
+
+### `CrawlingFunction`
+
+```text
+FunctionName: books-pipeline-crawling
+Runtime: Python 3.13
+Memory: 512 MB
+Timeout: 60 sec
+DATA_DIR: /tmp/data
+```
+
+S3 Raw 데이터를 쓰기 위해 `S3WritePolicy`를 사용합니다.
+
+### `ExtractFunction`
+
+```text
+FunctionName: books-pipeline-extract
+Runtime: Python 3.13
+Memory: 512 MB
+Timeout: 60 sec
+DATA_DIR: /tmp/data
+```
+
+Raw HTML을 읽고 Interim CSV를 저장하기 위해 `S3ReadPolicy`, `S3WritePolicy`를 사용합니다.
 
 ---
 
-## 7. 환경 설정
+## 9. SAM 관리 S3와 데이터 S3의 차이
 
-### 7.1 실행 패키지 설치
+AWS 계정에는 SAM 배포 후 서로 다른 목적의 S3 Bucket이 보일 수 있습니다.
 
-프로젝트 실행에 필요한 패키지를 설치합니다.
+```text
+aws-sam-cli-managed-default-samclisourcebucket-...
+```
+
+이 Bucket은 **SAM CLI 배포 아티팩트 저장용**입니다.
+
+```text
+로컬 소스
+   ↓
+sam build
+   ↓
+Lambda 배포 패키지
+   ↓
+SAM 관리 S3 Bucket
+   ↓
+CloudFormation
+   ↓
+Lambda
+```
+
+반면 `DataBucket`은 애플리케이션 데이터 저장용입니다.
+
+```text
+Crawling Lambda
+      ↓
+DataBucket/raw/
+      ↓
+Extract Lambda
+      ↓
+DataBucket/interim/
+```
+
+두 Bucket의 목적을 구분하여 사용합니다.
+
+---
+
+## 10. 환경 구성
+
+### 10.1 가상환경 생성
+
+프로젝트 루트에서:
 
 ```bash
+python -m venv .venv
+```
+
+PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Git Bash:
+
+```bash
+source .venv/Scripts/activate
+```
+
+### 10.2 실행 패키지 설치
+
+```bash
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
@@ -460,32 +655,22 @@ SQLAlchemy
 PyMySQL
 ```
 
----
-
-### 7.2 개발 및 CI 패키지 설치
-
-테스트와 코드 품질 검사를 포함한 개발 환경은 다음 명령으로 구성합니다.
+### 10.3 개발 및 테스트 패키지 설치
 
 ```bash
 python -m pip install -r requirements-dev.txt
 ```
 
-`requirements-dev.txt`:
+추가 개발 의존성:
 
 ```text
--r requirements.txt
-
 pytest
 ruff
 ```
 
-따라서 실행 패키지와 함께 `pytest`, `Ruff`가 설치됩니다.
+### 10.4 `.env` 설정
 
----
-
-### 7.3 `.env` 설정
-
-프로젝트 루트의 `.env.example`을 참고하여 `.env`를 작성합니다.
+`.env.example`을 참고하여 로컬 `.env`를 작성합니다.
 
 ```env
 DB_HOST=
@@ -495,13 +680,11 @@ DB_USER=
 DB_PASSWORD=
 ```
 
-`.env`에는 DB 비밀번호 등의 민감정보가 포함되므로 Git에 커밋하지 않습니다.
+`.env`는 Git에 커밋하지 않습니다.
 
 ---
 
-## 8. 파이프라인 실행
-
-프로젝트 루트에서 다음 명령으로 전체 파이프라인을 실행합니다.
+## 11. 로컬 파이프라인 실행
 
 ```bash
 python main.py
@@ -531,100 +714,60 @@ main.py
 
 ---
 
-## 9. 테스트
+## 12. 테스트와 코드 품질 검사
 
-테스트 코드는 `tests/`에 위치합니다.
-
-```text
-tests/
-├─ test_extract.py
-└─ test_preprocess.py
-```
-
-현재 테스트 대상은 외부 네트워크나 MySQL에 직접 의존하지 않는 함수 중심으로 구성합니다.
-
-주요 테스트 대상:
-
-```text
-parse_batch_directory_name()
-parse_raw_file_name()
-parse_parsed_file_name()
-parse_price()
-parse_availability()
-build_processed_file_path()
-```
-
-전체 테스트 실행:
+### pytest
 
 ```bash
 python -m pytest -v
 ```
 
-`pyproject.toml`에서 pytest 테스트 경로를 지정합니다.
+현재 테스트 구성:
 
-```toml
-[tool.pytest.ini_options]
-pythonpath = ["."]
-testpaths = ["tests"]
+```text
+test_extract.py
+    Extract 관련 파일명/배치 파싱 테스트
+
+test_preprocess.py
+    Preprocess 변환 및 파일 경로 테스트
+
+test_crawling_handler.py
+    Crawling Lambda Handler 단위 테스트
+
+test_extract_handler.py
+    Extract Lambda Handler 단위 테스트
+
+test_s3_storage.py
+    S3 Raw 업로드 기능 단위 테스트
 ```
 
----
+AWS 호출을 직접 수행하지 않는 테스트에서는 Mock을 사용하여 외부 의존성을 분리합니다.
 
-## 10. Ruff 코드 품질 검사
-
-Ruff를 이용하여 Python 코드의 기본 오류와 코드 스타일을 검사합니다.
-
-실행:
+### Ruff
 
 ```bash
 python -m ruff check .
 ```
 
-현재 `pyproject.toml`에서 다음 규칙을 적용합니다.
+`pyproject.toml`의 주요 설정:
 
 ```text
-E4
-E7
-E9
-F
-I
-DTZ
-RUF
-```
-
-주요 검사 항목:
-
-```text
-Python 기본 문법 및 스타일
-미사용 또는 잘못된 코드
-import 정렬
-datetime timezone 사용
-Ruff 권장 코드 품질 규칙
-```
-
-Python 기준 버전:
-
-```text
-Python 3.13
-```
-
-한 줄 길이 기준:
-
-```text
-100
+Python: 3.13
+line-length: 100
+규칙: E4, E7, E9, F, I, DTZ, RUF
 ```
 
 ---
 
-## 11. GitHub Actions CI
+## 13. GitHub Actions CI
 
-CI workflow는 다음 위치에 있습니다.
+Workflow 위치:
 
 ```text
 .github/workflows/ci.yml
 ```
 
-CI 실행 조건:
+실행 조건:
 
 ```text
 main branch push
@@ -632,7 +775,7 @@ main branch push
 main branch 대상 pull_request
 ```
 
-실행 흐름:
+현재 CI 흐름:
 
 ```text
 GitHub Push / Pull Request
@@ -650,58 +793,149 @@ pytest 실행
 CI 성공 / 실패
 ```
 
-CI에서는 다음 두 명령을 자동으로 수행합니다.
+현재 GitHub Actions는 **CI 코드 검사와 테스트**를 담당합니다. AWS 배포는 아직 `sam deploy`를 이용해 수동으로 수행합니다.
+
+---
+
+## 14. AWS SAM 빌드 및 배포
+
+프로젝트 파일 또는 `template.yaml`을 수정한 뒤 다음 순서로 검증합니다.
 
 ```bash
 python -m ruff check .
 python -m pytest -v
+sam validate
+sam build
+sam deploy
 ```
 
-따라서 로컬과 GitHub Actions에서 동일한 검사 명령을 사용할 수 있습니다.
-
----
-
-## 12. 프로젝트 문서
-
-프로젝트 관련 문서는 `docs/`에 목적별로 분리하여 보관합니다.
+역할:
 
 ```text
-docs/
-├─ 00_static_pipeline_docs/
-│  ├─ README.md
-│  ├─ 06_1_crawling.md
-│  ├─ 06_2_parsing.md
-│  ├─ 06_3_preprocessing.md
-│  └─ 06_4_mysql_load.md
-│
-├─ 01_requirements/
-│  └─ 데이터 수집 파이프라인 요구사항 정의서
-│
-└─ 02_architecture/
-   └─ 빅데이터 플랫폼 아키텍처 설계서
+sam validate
+→ SAM Template 문법/구조 검증
+
+sam build
+→ Lambda 실행 코드와 의존성을 .aws-sam/build에 구성
+
+sam deploy
+→ 배포 아티팩트를 S3에 업로드하고 CloudFormation Stack 업데이트
 ```
 
-각 폴더의 역할:
+현재 Stack 이름:
 
-| 디렉터리 | 역할 |
-|---|---|
-| `00_static_pipeline_docs/` | 정적 데이터 수집 파이프라인 단계별 설명 |
-| `01_requirements/` | 데이터 수집 파이프라인 요구사항 정의서 |
-| `02_architecture/` | 빅데이터 플랫폼 아키텍처 설계서 |
+```text
+books-pipeline
+```
+
+현재 Region:
+
+```text
+ap-northeast-2
+```
 
 ---
 
-## 13. Git 관리 정책
+## 15. Lambda 원격 호출
+
+### 15.1 Crawling Lambda
+
+`events/crawling-event.json`:
+
+```json
+{
+  "start_page": 1,
+  "end_page": 3
+}
+```
+
+호출:
+
+```powershell
+sam remote invoke CrawlingFunction `
+  --stack-name books-pipeline `
+  --event-file events/crawling-event.json
+```
+
+정상 실행 후 S3에서 다음 Prefix를 확인합니다.
+
+```text
+raw/{batch_id}/
+```
+
+### 15.2 Extract Lambda
+
+`events/extract-event.json`은 **직전 Crawling Lambda의 실제 반환값**을 기준으로 작성합니다.
+
+```json
+{
+  "batch_id": "<actual-batch-id>",
+  "bucket": "<actual-data-bucket-name>",
+  "raw_prefix": "raw/<actual-batch-id>/"
+}
+```
+
+호출:
+
+```powershell
+sam remote invoke ExtractFunction `
+  --stack-name books-pipeline `
+  --event-file events/extract-event.json
+```
+
+정상 실행 후 S3에서 다음 Prefix를 확인합니다.
+
+```text
+interim/{batch_id}/
+```
+
+`sam remote invoke`는 로컬 코드를 실행하는 명령이 아니라, **로컬 SAM CLI를 이용해 AWS에 배포된 Lambda를 원격 호출하는 명령**입니다.
+
+---
+
+## 16. Lambda `/var/task`와 `/tmp`
+
+Lambda 실행 환경에서 주요 경로의 역할은 다음과 같습니다.
+
+```text
+/var/task
+→ 배포된 Lambda 코드와 패키지가 위치하는 실행 기준 경로
+
+/tmp
+→ Lambda 실행 중 파일을 임시 저장할 수 있는 쓰기 가능한 영역
+```
+
+현재 Lambda에서는:
+
+```text
+DATA_DIR=/tmp/data
+```
+
+를 사용합니다.
+
+Crawling Lambda가 `/tmp`에 만든 파일은 다른 Lambda가 직접 접근할 수 없으므로 S3에 업로드합니다.
+
+```text
+Crawling Lambda /tmp
+        ↓
+Amazon S3
+        ↓
+Extract Lambda /tmp
+```
+
+이 구조를 통해 서로 독립적인 Lambda 실행 환경 사이에서 데이터를 전달합니다.
+
+---
+
+## 17. Git 관리 정책
 
 이 프로젝트는 블랙리스트 방식의 `.gitignore`를 사용합니다.
-
-프로젝트 파일은 기본적으로 Git에서 추적하고,  
-로컬 환경·비밀정보·실행 산출물·캐시 등을 제외합니다.
 
 주요 제외 대상:
 
 ```text
 .env
+.env.*
 data/
 logs/
 *.log
@@ -715,109 +949,98 @@ __pycache__/
 .venv/
 venv/
 
-.ipynb_checkpoints/
 .vscode/
 .idea/
 
 build/
 dist/
 .aws-sam/
+samconfig.toml
 ```
 
 `.env.example`은 실제 비밀번호가 포함되지 않은 환경설정 예제이므로 Git에서 추적합니다.
 
-현재 `.gitignore`에 `docs/`가 포함되어 있으므로 `docs/` 아래 문서는 로컬에서 관리됩니다.  
-문서도 GitHub에서 버전 관리하려면 `.gitignore`의 `docs/` 제외 규칙을 제거해야 합니다.
+---
+
+
+
+## 18. 현재 구현 상태
+
+### 완료
+
+```text
+[Local]
+Crawling
+→ Extract
+→ Preprocess
+→ Load
+→ MySQL
+
+[Code Quality / CI]
+pytest
+→ Ruff
+→ GitHub Actions CI
+
+[AWS]
+AWS SAM
+→ CloudFormation
+→ Crawling Lambda
+→ S3 Raw 저장
+→ Extract Lambda
+→ S3 Interim 저장
+```
+
+### 다음 구현 단계
+
+```text
+S3 Interim
+      ↓
+Preprocess Lambda
+      ↓
+S3 Processed
+      ↓
+Load Lambda
+      ↓
+Amazon RDS MySQL
+```
+
+그 이후에는 각 Lambda를 Step Functions로 연결하고 EventBridge Scheduler를 이용해 정기 실행 구조로 확장할 예정입니다.
+
+```text
+EventBridge Scheduler
+        ↓
+Step Functions
+        ↓
+Crawling Lambda
+        ↓
+S3 Raw
+        ↓
+Extract Lambda
+        ↓
+S3 Interim
+        ↓
+Preprocess Lambda
+        ↓
+S3 Processed
+        ↓
+Load Lambda
+        ↓
+RDS MySQL
+```
 
 ---
 
-## 14. 프로젝트 설계 원칙
+## 19. 설계 원칙
 
-이 프로젝트는 다음 원칙을 기준으로 구성합니다.
-
-- 원본 데이터는 수정하지 않고 `raw`에 보관합니다.
-- 한 번의 수집 실행을 하나의 배치로 관리합니다.
-- `raw`와 `interim`은 동일한 배치 이름을 사용합니다.
-- 페이지별 원본 HTML과 parsed CSV를 유지합니다.
-- 페이지별 parsed CSV는 전처리 단계에서 하나의 DataFrame으로 통합합니다.
-- 전처리와 검증이 완료된 데이터만 `processed`에 저장합니다.
-- 데이터 저장 전 필수 컬럼, 결측값, 중복값과 자료형을 검증합니다.
-- 데이터베이스 비밀번호와 같은 민감정보는 `.env`로 분리합니다.
+- 원본 데이터는 `raw` 영역에 보관합니다.
+- 한 번의 수집 실행을 하나의 `batch_id`로 관리합니다.
+- 단계 간 대용량 데이터는 S3에 저장합니다.
+- Lambda 간에는 `batch_id`, `bucket`, `prefix` 등의 메타데이터를 전달합니다.
+- Lambda의 `/tmp`는 임시 작업 공간으로만 사용합니다.
+- 각 Lambda Handler는 실행 제어에 집중하고 실제 데이터 처리 로직은 `src/` 모듈을 재사용합니다.
 - 공통 설정은 `config.py`에서 관리합니다.
 - 데이터베이스 연결 책임은 `database.py`에서 관리합니다.
-- `main.py`는 파이프라인 실행 함수 연결에 집중합니다.
-- 각 단계의 반환값을 다음 단계의 입력값으로 전달합니다.
-- 테스트와 코드 품질 검사를 로컬과 CI에서 동일한 명령으로 수행합니다.
-
----
-
-## 15. ETL 관점의 데이터 처리
-
-현재 프로젝트를 ETL 관점에서 보면 다음과 같이 구분할 수 있습니다.
-
-```text
-Extract
-├─ 웹페이지 요청
-├─ 원본 HTML 저장
-└─ HTML 파싱
-
-Transform
-├─ 페이지별 CSV 통합
-├─ 문자열 정리
-├─ 자료형 변환
-├─ 가격 변환
-├─ 재고 상태 변환
-├─ 중복 처리
-├─ 메타데이터 생성
-└─ 데이터 검증
-
-Load
-├─ processed CSV 읽기
-├─ 배치 정보 검증
-├─ MySQL 연결
-├─ books 테이블 생성
-└─ INSERT / UPDATE
-```
-
-전체 ETL 흐름:
-
-```text
-Extract → Transform → Load
-```
-
----
-
-## 16. 현재 구성 및 확장 방향
-
-현재 프로젝트는 다음 구성까지 포함합니다.
-
-```text
-정적 웹 크롤링
-→ 페이지네이션 수집
-→ raw / interim / processed 데이터 계층
-→ MySQL 저장
-→ Python 모듈 분리
-→ 공통 설정 분리
-→ DB 연결 모듈 분리
-→ pytest 단위 테스트
-→ Ruff 코드 품질 검사
-→ GitHub Actions CI
-```
-
-이후에는 현재 로컬 파이프라인을 AWS 환경으로 확장하여  
-배포 및 데이터 수집 자동화 구조를 구성할 수 있습니다.
-
-```text
-현재
-Python Pipeline
-+ pytest
-+ Ruff
-+ GitHub Actions CI
-
-        ↓
-
-향후
-AWS 배포
-+ 자동 데이터 수집
-+ CI/CD
-```
+- AWS S3 입출력 책임은 `s3_storage.py`에서 관리합니다.
+- 테스트에서는 외부 네트워크 및 AWS 의존성을 가능한 한 Mock으로 분리합니다.
+- 로컬과 CI에서 동일한 Ruff/pytest 명령을 사용합니다.
+- AWS 리소스는 `template.yaml`을 기준으로 재현 가능하게 관리합니다.
