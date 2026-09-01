@@ -73,3 +73,125 @@ def upload_raw_html_batch(
         )
 
     return object_keys
+
+
+def download_raw_html_batch(
+    bucket_name: str,
+    batch_id: str,
+    raw_prefix: str,
+    destination_dir: Path,
+    s3_client: Any | None = None,
+) -> Path:
+    """
+    S3 Raw 영역의 HTML 파일을
+    Lambda 임시 디렉터리로 다운로드합니다.
+    """
+
+    if not bucket_name:
+        raise ValueError('S3 Bucket 이름이 지정되지 않았습니다.')
+
+    if not batch_id:
+        raise ValueError('batch_id가 지정되지 않았습니다.')
+
+    if not raw_prefix:
+        raise ValueError('raw_prefix가 지정되지 않았습니다.')
+
+    if s3_client is None:
+        import boto3
+
+        s3_client = boto3.client('s3')
+
+    raw_batch_dir = destination_dir / batch_id
+    raw_batch_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    ## S3 Prefix에 포함된 객체 목록 조회
+    response = s3_client.list_objects_v2(
+        Bucket=bucket_name,
+        Prefix=raw_prefix,
+    )
+
+    objects = response.get('Contents', [])
+
+    html_objects = [
+        obj
+        for obj in objects
+        if obj['Key'].endswith('.html')
+    ]
+
+    if not html_objects:
+        raise FileNotFoundError(
+            f'S3 Raw 영역에 HTML 파일이 없습니다: '
+            f's3://{bucket_name}/{raw_prefix}'
+        )
+
+    for obj in html_objects:
+        object_key = obj['Key']
+        file_name = Path(object_key).name
+
+        local_file = raw_batch_dir / file_name
+
+        s3_client.download_file(
+            bucket_name,
+            object_key,
+            str(local_file),
+        )
+
+        print(
+            f'S3 다운로드 완료 : '
+            f's3://{bucket_name}/{object_key}'
+        )
+
+    return raw_batch_dir
+
+
+def upload_interim_files(
+    csv_files: list[Path],
+    bucket_name: str,
+    batch_id: str,
+    s3_client: Any | None = None,
+) -> list[str]:
+    """
+    Extract 단계에서 생성된 CSV 파일을
+    S3 Interim 영역에 업로드합니다.
+    """
+
+    if not bucket_name:
+        raise ValueError('S3 Bucket 이름이 지정되지 않았습니다.')
+
+    if not csv_files:
+        raise ValueError('업로드할 CSV 파일이 없습니다.')
+
+    if s3_client is None:
+        import boto3
+
+        s3_client = boto3.client('s3')
+
+    interim_prefix = f'interim/{batch_id}'
+    object_keys: list[str] = []
+
+    for csv_file in csv_files:
+        object_key = (
+            f'{interim_prefix}/{csv_file.name}'
+        )
+
+        s3_client.upload_file(
+            str(csv_file),
+            bucket_name,
+            object_key,
+        )
+
+        object_keys.append(object_key)
+
+        print(
+            f'S3 업로드 완료 : '
+            f's3://{bucket_name}/{object_key}'
+        )
+
+    return object_keys
+
+
+
+

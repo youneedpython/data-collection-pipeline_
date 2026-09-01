@@ -2,8 +2,8 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 
 Description: >
-  Books to Scrape 데이터 수집 파이프라인의
-  Crawling Lambda 배포를 위한 AWS SAM 템플릿
+  Books to Scrape 데이터 수집 파이프라인을 위한
+  AWS SAM 템플릿
 
 
 ## ===========================================================
@@ -52,6 +52,36 @@ Resources:
             BucketName: !Ref DataBucket
 
   ## =========================================================
+  ## Extract Lambda
+  ## =========================================================
+
+  ExtractFunction:
+    Type: [AWS::Serverless::Function
+
+    Properties:
+
+      FunctionName: books-pipeline-extract-lec
+
+      CodeUri: .
+
+      Handler: handlers.extract_handler.lambda_handler
+
+      Description: >
+        S3 Raw HTML에서 도서 정보를 추출하는 Extract Lambda
+
+      Environment:
+        Variables:
+          DATA_DIR: /tmp/data
+          DATA_BUCKET_NAME: !Ref DataBucket
+
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref DataBucket
+
+        - S3WritePolicy:
+            BucketName: !Ref DataBucket
+
+  ## =========================================================
   ## 데이터 파이프라인 S3 Bucket
   ## =========================================================
   DataBucket:
@@ -82,3 +112,13 @@ Outputs:
   DataBucketName:
     Description: Data Pipeline S3 Bucket Name
     Value: !Ref DataBucket
+
+  ExtractFunctionName:
+    Description: Extract Lambda Function Name
+    Value: !Ref ExtractFunction
+
+  ExtractFunctionArn:
+    Description: Extract Lambda Function ARN
+    Value: !GetAtt ExtractFunction.Arn
+
+
