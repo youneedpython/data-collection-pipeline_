@@ -5,7 +5,7 @@
 현재 프로젝트는 [Books to Scrape](https://books.toscrape.com/)를 대상으로 다음 두 실행 구조를 함께 제공합니다.
 
 - **로컬 파이프라인**: Crawling → Extract → Preprocess → Load → MySQL
-- **AWS 파이프라인(현재 구현 범위)**: Crawling Lambda → S3 Raw → Extract Lambda → S3 Interim
+- **AWS 파이프라인(현재 구현 범위)**: Crawling Lambda → S3 Raw → Extract Lambda → S3 Interim → Preprocess Lambda → S3 Processed
 
 또한 `pytest`, `Ruff`, GitHub Actions를 이용하여 코드 품질과 테스트를 자동으로 검증하고, AWS SAM과 CloudFormation을 이용하여 Lambda와 S3 리소스를 배포합니다.
 
@@ -68,7 +68,7 @@ run_load()
 
 ### 2.2 AWS 파이프라인 - 현재 구현 상태
 
-현재 AWS 환경에서는 Crawling과 Extract 단계를 Lambda로 분리했습니다.
+현재 AWS 환경에서는 Crawling, Extract, Preprocess 단계를 Lambda로 분리했습니다.
 
 ```text
 Books to Scrape
@@ -90,6 +90,17 @@ HTML Parsing
        ↓
 Amazon S3
 interim/{batch_id}/
+       ↓
+Preprocess Lambda
+       ↓
+/tmp/data/interim/{batch_id}/
+       ↓
+데이터 통합 / 전처리 / 검증
+       ↓
+/tmp/data/processed/
+       ↓
+Amazon S3
+processed/{batch_id}/
 ```
 
 현재 구현 완료 범위:
@@ -102,13 +113,13 @@ S3 Raw
 Extract Lambda
       ↓
 S3 Interim
-      ✅ 완료
-
-다음 단계
       ↓
 Preprocess Lambda
       ↓
 S3 Processed
+      ✅ 완료
+
+다음 단계
       ↓
 Load Lambda
       ↓
@@ -128,12 +139,14 @@ data-collection-pipeline/
 │
 ├─ events/
 │  ├─ crawling-event.json
-│  └─ extract-event.json
+│  ├─ extract-event.json
+│  └─ preprocess-event.json
 │
 ├─ handlers/
 │  ├─ __init__.py
 │  ├─ crawling_handler.py
-│  └─ extract_handler.py
+│  ├─ extract_handler.py
+│  └─ preprocess_handler.py
 │
 ├─ src/
 │  └─ data_collection_pipeline/
@@ -151,6 +164,7 @@ data-collection-pipeline/
 │  ├─ test_extract.py
 │  ├─ test_extract_handler.py
 │  ├─ test_preprocess.py
+│  ├─ test_preprocess_handler.py
 │  └─ test_s3_storage.py
 │
 ├─ data/                  # 로컬 실행 데이터, Git 제외
@@ -290,7 +304,7 @@ data/interim/20260830_163041/
 → Processed CSV 저장
 ```
 
-현재 AWS Lambda 버전은 아직 구현하지 않았으며 로컬 파이프라인에서 사용합니다.
+로컬 파이프라인에서는 `run_preprocess()`가 직접 실행되고, AWS 환경에서는 `preprocess_handler.py`가 S3 Interim 데이터를 내려받아 기존 `run_preprocess()`를 재사용합니다.
 
 ---
 
@@ -352,6 +366,12 @@ download_raw_html_batch()
 
 upload_interim_files()
     Extract 결과 CSV → S3 interim 영역 업로드
+
+download_interim_batch()
+    S3 interim CSV → Preprocess Lambda /tmp 다운로드
+
+upload_processed_file()
+    Preprocess 결과 CSV → S3 processed 영역 업로드
 ```
 
 S3 Object Key 예:
@@ -364,6 +384,8 @@ raw/20260830_163041/books_page_003.html
 interim/20260830_163041/books_page_001_parsed.csv
 interim/20260830_163041/books_page_002_parsed.csv
 interim/20260830_163041/books_page_003_parsed.csv
+
+processed/20260830_163041/books_pages_001_003_processed_20260830_163041.csv
 ```
 
 ---
@@ -468,6 +490,56 @@ S3 interim/{batch_id}/ 업로드
 
 향후 Step Functions에서는 이 반환값의 메타데이터를 다음 단계로 전달할 예정입니다.
 
+
+### 5.3 `preprocess_handler.py`
+
+Preprocess Lambda의 실행 진입점입니다.
+
+입력 Event 예:
+
+```json
+{
+  "batch_id": "20260901_035140",
+  "bucket": "<data-bucket-name>",
+  "interim_prefix": "interim/20260901_035140/"
+}
+```
+
+처리 흐름:
+
+```text
+Lambda Event
+      ↓
+batch_id / bucket / interim_prefix 검증
+      ↓
+S3 Interim CSV 다운로드
+      ↓
+/tmp/data/interim/{batch_id}/
+      ↓
+run_preprocess()
+      ↓
+Processed CSV 생성
+      ↓
+S3 processed/{batch_id}/ 업로드
+```
+
+반환 예:
+
+```json
+{
+  "stage": "preprocess",
+  "status": "SUCCEEDED",
+  "batch_id": "20260901_035140",
+  "bucket": "<data-bucket-name>",
+  "interim_prefix": "interim/20260901_035140/",
+  "processed_prefix": "processed/20260901_035140/",
+  "processed_key": "processed/20260901_035140/books_pages_001_003_processed_20260901_035140.csv",
+  "request_id": "..."
+}
+```
+
+`processed_key`는 다음 Load 단계에서 처리할 Processed CSV 객체를 정확하게 지정하기 위한 메타데이터입니다.
+
 ---
 
 ## 6. S3 데이터 구조
@@ -483,23 +555,18 @@ DataBucket
 │     ├─ books_page_002.html
 │     └─ books_page_003.html
 │
-└─ interim/
-   └─ {batch_id}/
-      ├─ books_page_001_parsed.csv
-      ├─ books_page_002_parsed.csv
-      └─ books_page_003_parsed.csv
-```
-
-S3 콘솔에서 보이는 `raw/`, `interim/`은 일반 파일시스템의 실제 디렉터리가 아니라 Object Key의 Prefix입니다.
-
-향후 구조:
-
-```text
-DataBucket
-├─ raw/
 ├─ interim/
+│  └─ {batch_id}/
+│     ├─ books_page_001_parsed.csv
+│     ├─ books_page_002_parsed.csv
+│     └─ books_page_003_parsed.csv
+│
 └─ processed/
+   └─ {batch_id}/
+      └─ books_pages_001_003_processed_{batch_id}.csv
 ```
+
+S3 콘솔에서 보이는 `raw/`, `interim/`, `processed/`는 일반 파일시스템의 실제 디렉터리가 아니라 Object Key의 Prefix입니다.
 
 ---
 
@@ -524,6 +591,7 @@ YYYYMMDD_HHMMSS
 ```text
 raw/20260830_163041/
 interim/20260830_163041/
+processed/20260830_163041/
 ```
 
 이를 통해 한 번의 데이터 수집 작업이 다음 단계로 어떻게 처리되었는지 추적할 수 있습니다.
@@ -540,12 +608,13 @@ AWS 리소스는 프로젝트 루트의 `template.yaml`에서 정의합니다.
 Resources
 ├─ DataBucket
 ├─ CrawlingFunction
-└─ ExtractFunction
+├─ ExtractFunction
+└─ PreprocessFunction
 ```
 
 ### `DataBucket`
 
-파이프라인의 Raw HTML과 Interim CSV를 저장하는 S3 Bucket입니다.
+파이프라인의 Raw HTML, Interim CSV, Processed CSV를 저장하는 S3 Bucket입니다.
 
 CloudFormation이 Bucket 이름을 자동 생성하므로 특정 Bucket 이름을 코드에 고정하지 않습니다.
 
@@ -572,6 +641,18 @@ DATA_DIR: /tmp/data
 ```
 
 Raw HTML을 읽고 Interim CSV를 저장하기 위해 `S3ReadPolicy`, `S3WritePolicy`를 사용합니다.
+
+### `PreprocessFunction`
+
+```text
+FunctionName: books-pipeline-preprocess
+Runtime: Python 3.13
+Memory: 512 MB
+Timeout: 60 sec
+DATA_DIR: /tmp/data
+```
+
+Interim CSV를 읽고 Processed CSV를 저장하기 위해 `S3ReadPolicy`, `S3WritePolicy`를 사용합니다.
 
 ---
 
@@ -609,6 +690,10 @@ DataBucket/raw/
 Extract Lambda
       ↓
 DataBucket/interim/
+      ↓
+Preprocess Lambda
+      ↓
+DataBucket/processed/
 ```
 
 두 Bucket의 목적을 구분하여 사용합니다.
@@ -737,8 +822,11 @@ test_crawling_handler.py
 test_extract_handler.py
     Extract Lambda Handler 단위 테스트
 
+test_preprocess_handler.py
+    Preprocess Lambda Handler 단위 테스트
+
 test_s3_storage.py
-    S3 Raw 업로드 기능 단위 테스트
+    S3 Raw / Interim / Processed 입출력 기능 단위 테스트
 ```
 
 AWS 호출을 직접 수행하지 않는 테스트에서는 Mock을 사용하여 외부 의존성을 분리합니다.
@@ -889,6 +977,32 @@ sam remote invoke ExtractFunction `
 interim/{batch_id}/
 ```
 
+### 15.3 Preprocess Lambda
+
+`events/preprocess-event.json`은 **직전 Extract Lambda의 실제 반환값과 S3 Interim 경로**를 기준으로 작성합니다.
+
+```json
+{
+  "batch_id": "<actual-batch-id>",
+  "bucket": "<actual-data-bucket-name>",
+  "interim_prefix": "interim/<actual-batch-id>/"
+}
+```
+
+호출:
+
+```powershell
+sam remote invoke PreprocessFunction `
+  --stack-name books-pipeline `
+  --event-file events/preprocess-event.json
+```
+
+정상 실행 후 S3에서 다음 Prefix와 Processed CSV를 확인합니다.
+
+```text
+processed/{batch_id}/
+```
+
 `sam remote invoke`는 로컬 코드를 실행하는 명령이 아니라, **로컬 SAM CLI를 이용해 AWS에 배포된 Lambda를 원격 호출하는 명령**입니다.
 
 ---
@@ -988,15 +1102,13 @@ AWS SAM
 → S3 Raw 저장
 → Extract Lambda
 → S3 Interim 저장
+→ Preprocess Lambda
+→ S3 Processed 저장
 ```
 
 ### 다음 구현 단계
 
 ```text
-S3 Interim
-      ↓
-Preprocess Lambda
-      ↓
 S3 Processed
       ↓
 Load Lambda
