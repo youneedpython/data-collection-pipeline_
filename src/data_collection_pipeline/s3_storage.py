@@ -348,3 +348,66 @@ def upload_processed_file(
 
     ## 7. 저장된 S3 Object Key 반환 (후속 적재 단계 또는 메타데이터 관리용)
     return object_key
+
+
+def download_processed_file(
+    bucket_name: str,
+    processed_key: str,
+    destination_dir: Path,
+    s3_client: Any | None = None,
+) -> Path:
+    """
+    S3 Processed 영역의 CSV 파일을
+    Lambda 임시 디렉터리로 다운로드합니다.
+    """
+
+    ## 1. 대상 S3 버킷 이름 유효성 검증
+    if not bucket_name:
+        raise ValueError('S3 Bucket 이름이 지정되지 않았습니다.')
+
+    ## 2. 다운로드할 S3 Processed 객체 키(Object Key) 누락 여부 검증
+    if not processed_key:
+        raise ValueError('processed_key가 지정되지 않았습니다.')
+
+    ## 3. 대상 객체가 전처리 완료 데이터 형식인 CSV인지 확장자 검증
+    if not processed_key.endswith('.csv'):
+        raise ValueError(
+            f'Processed 객체가 CSV 파일이 아닙니다: {processed_key}'
+        )
+
+    ## 4. S3 클라이언트 주입 여부 확인 및 boto3 기본 클라이언트 초기화
+    if s3_client is None:
+        import boto3
+
+        s3_client = boto3.client('s3')
+
+    ## 5. 다운로드 파일을 저장할 로컬 목적지 디렉터리 생성 (/tmp/...)
+    destination_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    ## 6. S3 키에서 순수 파일명을 추출하고 로컬 저장 대상 전체 경로 생성
+    file_name = Path(processed_key).name
+    local_file = destination_dir / file_name
+
+    ## 7. S3 Processed 객체를 로컬 파일 시스템으로 다운로드 실행
+    s3_client.download_file(
+        bucket_name,
+        processed_key,
+        str(local_file),
+    )
+
+    ## 8. 다운로드 완료 로그 출력
+    print(
+        f'S3 다운로드 완료 : '
+        f's3://{bucket_name}/{processed_key}'
+    )
+
+    ## 9. 최종 다운로드된 로컬 CSV 파일의 Path 객체 반환 (후속 DB 적재 단계에서 활용)
+    return local_file
+
+
+
+
+
