@@ -1,124 +1,210 @@
+## CloudFormation 템플릿 버전 정의 (현재 지원되는 표준 최신 포맷)
 AWSTemplateFormatVersion: '2010-09-09'
+
+## SAM 구문을 표준 AWS CloudFormation 리소스로 변환하는 매크로 선언
 Transform: AWS::Serverless-2016-10-31
 
+## 템플릿 전체에 대한 개요 및 메타데이터 설명
 Description: >
   Books to Scrape 데이터 수집 파이프라인을 위한
   AWS SAM 템플릿
 
 
 ## ===========================================================
-## 공통 설정
+## 공통 설정 (템플릿 내의 모든 Lambda 리소스에 기본 적용)
 ## ===========================================================
 
 Globals:
 
   Function:
+    ## 런타임 환경 (Python 최신 지원 버전)
     Runtime: python3.13
+
+    ## CPU 명령어 세트 아키텍처 (x86_64 기반)
     Architectures:
       - x86_64
+
+    ## 함수 메모리 할당 (MB 단위, 비례하여 vCPU 성능 배정)
     MemorySize: 512
+
+    ## 함수 최대 실행 시간 (초 단위, 웹 크롤링/네트워크 지연 대응을 위해 60초 설정)
     Timeout: 60
 
 
 ## ===========================================================
-## AWS Resources
+## AWS Resources (배포할 서버리스 인프라 및 스토리지 정의)
 ## ===========================================================
 Resources:
 
   ## =========================================================
-  ## Crawling Lambda
+  ## Crawling Lambda (웹페이지 수집 및 S3 Raw 업로드)
   ## =========================================================
   CrawlingFunction:
     Type: AWS::Serverless::Function
 
     Properties:
 
+      ## 배포될 함수의 물리적 이름 지정
       FunctionName: books-pipeline-crawling-lec
 
+      ## 소스 코드 루트 경로
       CodeUri: .
 
+      ## 함수 실행 엔트리포인트 (모듈.파일명.함수명)
       Handler: handlers.crawling_handler.lambda_handler
 
+      ## 함수에 대한 상세 설명
       Description: >
         Books to Scrape 페이지를 수집하는 Crawling Lambda
 
+      ## Lambda 런타임 환경 변수
       Environment:
         Variables:
+          ## 임시 파일 저장을 위한 Lambda 로컬 쓰기 가능 디렉터리
           DATA_DIR: /tmp/data
+          ## 아래 선언된 S3 버킷 리소스 이름을 동적으로 주입
           DATA_BUCKET_NAME: !Ref DataBucket
 
+      ## SAM 정책 템플릿을 통한 IAM 최소 권한 부여
       Policies:
+        ## Raw HTML 파일을 S3 버킷에 업로드(PutObject)할 수 있는 쓰기 권한
         - S3WritePolicy:
             BucketName: !Ref DataBucket
 
   ## =========================================================
-  ## Extract Lambda
+  ## Extract Lambda (S3 Raw HTML 파싱 -> S3 Interim CSV 저장)
   ## =========================================================
 
   ExtractFunction:
-    Type: [AWS::Serverless::Function
+    Type: AWS::Serverless::Function
 
     Properties:
 
+      ## 배포될 함수의 물리적 이름 지정
       FunctionName: books-pipeline-extract-lec
 
+      ## 소스 코드 루트 경로
       CodeUri: .
 
+      ## 함수 실행 엔트리포인트 (모듈.파일명.함수명)
       Handler: handlers.extract_handler.lambda_handler
 
+      ## 함수에 대한 상세 설명
       Description: >
         S3 Raw HTML에서 도서 정보를 추출하는 Extract Lambda
 
+      ## Lambda 런타임 환경 변수
       Environment:
         Variables:
           DATA_DIR: /tmp/data
           DATA_BUCKET_NAME: !Ref DataBucket
 
+      ## SAM 정책 템플릿을 통한 IAM 권한 부여
       Policies:
+        ## Raw HTML 파일을 S3에서 다운로드하기 위한 읽기 권한
         - S3ReadPolicy:
             BucketName: !Ref DataBucket
 
+        ## 추출된 Interim CSV 파일을 S3에 업로드하기 위한 쓰기 권한
         - S3WritePolicy:
             BucketName: !Ref DataBucket
 
   ## =========================================================
-  ## 데이터 파이프라인 S3 Bucket
+  ## 데이터 파이프라인 S3 Bucket (Raw, Interim, Processed 데이터 레이크)
   ## =========================================================
   DataBucket:
     Type: AWS::S3::Bucket
 
     Properties:
 
+      ## S3 퍼블릭 액세스 차단 설정 (보안 모범 사례 적용)
       PublicAccessBlockConfiguration:
+        ## 새로운 퍼블릭 ACL 차단
         BlockPublicAcls: true
+        ## 기존 퍼블릭 ACL 무시
         IgnorePublicAcls: true
+        ## 퍼블릭 버킷 정책 차단
         BlockPublicPolicy: true
+        ## 퍼블릭 및 크로스 계정 액세스 제한
         RestrictPublicBuckets: true
 
 
+  ## =========================================================
+  ## Preprocess Lambda (S3 Interim CSV 정제 -> S3 Processed 저장)
+  ## =========================================================
+
+  PreprocessFunction:
+    Type: AWS::Serverless::Function
+
+    Properties:
+
+      ## 배포될 함수의 물리적 이름 지정
+      FunctionName: books-pipeline-preprocess-lec
+
+      ## 소스 코드 루트 경로
+      CodeUri: .
+
+      ## 함수 실행 엔트리포인트 (모듈.파일명.함수명)
+      Handler: handlers.preprocess_handler.lambda_handler
+
+      ## 함수에 대한 상세 설명
+      Description: >
+        S3 Interim 데이터를 전처리하여
+        Processed 데이터를 생성하는 Lambda
+
+      ## Lambda 런타임 환경 변수
+      Environment:
+        Variables:
+          DATA_DIR: /tmp/data
+          DATA_BUCKET_NAME: !Ref DataBucket
+
+      ## SAM 정책 템플릿을 통한 IAM 권한 부여
+      Policies:
+        ## Interim CSV 파일을 다운로드하기 위한 읽기 권한
+        - S3ReadPolicy:
+            BucketName: !Ref DataBucket
+
+        ## 최종 정제된 Processed CSV 파일을 업로드하기 위한 쓰기 권한
+        - S3WritePolicy:
+            BucketName: !Ref DataBucket
+
+
 ## ===========================================================
-## Outputs
+## Outputs (스택 배포 후 출력되는 주요 리소스 식별자 및 ARN)
 ## ===========================================================
 Outputs:
 
+  ## Crawling Lambda 물리적 함수명 출력
   CrawlingFunctionName:
     Description: Crawling Lambda Function Name
     Value: !Ref CrawlingFunction
 
+  ## Crawling Lambda 리소스 고유 식별자(ARN) 출력
   CrawlingFunctionArn:
     Description: Crawling Lambda Function ARN
     Value: !GetAtt CrawlingFunction.Arn
 
+  ## 생성된 파이프라인 S3 버킷의 실제 이름 출력
   DataBucketName:
     Description: Data Pipeline S3 Bucket Name
     Value: !Ref DataBucket
 
+  ## Extract Lambda 물리적 함수명 출력
   ExtractFunctionName:
     Description: Extract Lambda Function Name
     Value: !Ref ExtractFunction
 
+  ## Extract Lambda 리소스 고유 식별자(ARN) 출력
   ExtractFunctionArn:
     Description: Extract Lambda Function ARN
     Value: !GetAtt ExtractFunction.Arn
 
+  ## Preprocess Lambda 물리적 함수명 출력
+  PreprocessFunctionName:
+    Description: Preprocess Lambda Function Name
+    Value: !Ref PreprocessFunction
 
+  ## Preprocess Lambda 리소스 고유 식별자(ARN) 출력
+  PreprocessFunctionArn:
+    Description: Preprocess Lambda Function ARN
+    Value: !GetAtt PreprocessFunction.Arn
