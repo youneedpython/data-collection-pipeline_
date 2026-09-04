@@ -104,7 +104,7 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
 
           ## CloudTrail 등에서 식별할 Session 이름
-          role-session-name: books-pipeline-github-actions
+          role-session-name: books-pipeline-lec-github-actions
 
 
       ## -------------------------------------------------------
@@ -143,7 +143,7 @@ jobs:
       - name: Deploy SAM application
         run: |
           sam deploy \
-            --stack-name books-pipeline \
+            --stack-name books-pipeline-lec \
             --region "${{ vars.AWS_REGION }}" \
             --resolve-s3 \
             --capabilities CAPABILITY_IAM \
